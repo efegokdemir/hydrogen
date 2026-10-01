@@ -23,7 +23,7 @@
 **Prerequisites:**
 
 - A storefront built on `@shopify/hydrogen` with the request interceptors already wired (`handleShopifyRoutes` and `handleShopifyRedirects`). The analytics bus depends on the SFAPI proxy so the browser can observe same-origin Storefront API responses for session cookies. Without the proxy, the backend session cookies cannot be established and analytics should be treated as incomplete. If you have not installed the interceptors yet, install them first with the local `hydrogen-request-handlers` skill.
-- Shopify runtime scripts rendered from the root/document head. Use `ShopifyScripts` from your framework binding if it exports one, or `getShopifyScriptTags()` / `renderShopifyScriptTags()` from core in other framework heads. Pass `{country, language, currency?}` as `i18n`; pass `{shopId: env.SHOP_ID, storefrontId: env.PUBLIC_STOREFRONT_ID ?? "0", myshopifyDomain: env.PUBLIC_STORE_DOMAIN}` as `shop`. Resolve both on the server, declare them as consts annotated with the `ShopifyScriptsShop` / `ShopifyScriptsI18n` types from `@shopify/hydrogen` (so wrong or missing fields fail typecheck where they are built), and serialize them into ShopifyScripts. ShopifyScripts creates `window.Shopify.analytics` by default and exposes the permanent domain as `window.Shopify.shop`. Analytics consent config does not accept `country` or `language`.
+- Shopify runtime scripts rendered from the root/document head. Use `ShopifyScripts` from your framework binding if it exports one, or `getShopifyScriptTags()` / `renderShopifyScriptTags()` from core in other framework heads. Pass `{country, language, currency}` as `i18n`; pass `{shopId: env.SHOP_ID, storefrontId: env.PUBLIC_STOREFRONT_ID ?? "0", myshopifyDomain: env.PUBLIC_STORE_DOMAIN}` as `shop`. Resolve both on the server, declare them as consts annotated with the `ShopifyScriptsShop` / `ShopifyScriptsI18n` types from `@shopify/hydrogen` (so wrong or missing fields fail typecheck where they are built), and serialize them into ShopifyScripts. ShopifyScripts creates `window.Shopify.analytics` by default and exposes the permanent domain as `window.Shopify.shop`. Analytics consent config does not accept `country` or `language`.
 - A client-side lifecycle hook in your framework (route-change effect, navigation event, `<script>` tag, etc.) so view events can fire on the right URL transitions.
 
 `ShopifyScripts` creates the zero-dependency analytics bus, sets it on `window.Shopify.analytics`, and owns Shopify consent setup and analytics CDN loading. Framework adapters stay thin: they translate framework lifecycle events into bus calls and wire cart delta tracking with `trackCartAnalytics()`.
@@ -83,7 +83,7 @@ const shop: ShopifyScriptsShop = {
 const i18n: ShopifyScriptsI18n = {
   country: "US",
   language: "EN",              // sent as Monorail content language
-  currency: "USD",             // optional; sets window.Shopify.currency.active
+  currency: "USD",             // sets window.Shopify.currency.active; Shopify analytics drops events without it
 };
 
 const consent: ConsentConfig = {
@@ -109,7 +109,7 @@ Resolve shop metadata on the server and pass it to ShopifyScripts. Shopify analy
 
 ### `i18n`
 
-Pass the app's resolved `country` and `language` market values. Optional `currency` sets `window.Shopify.currency.active` for Shopify runtime scripts and Shopify analytics. Shopify analytics reads its content language from `window.Shopify.locale`.
+Pass the app's resolved `country`, `language`, and `currency` market values. `currency` sets `window.Shopify.currency.active`, which Shopify runtime scripts and Shopify analytics read. The type marks `currency` optional, but Shopify analytics checks `window.Shopify.currency.active` before it sends any event, including `page_viewed`. When the value is missing, it logs `Missing window.Shopify.currency.active configuration` and drops the event. The cart tracker writes the value from cart cost, but only after a cart exists, so page and product views before the first cart action are lost. Treat `currency` as required whenever Shopify analytics is enabled, which is the default. The root configuration examples below show the `localization` query that resolves it when the market config has no currency code. Shopify analytics reads its content language from `window.Shopify.locale`.
 
 ### `analytics`
 
@@ -148,7 +148,7 @@ Do not bypass this gate in production. Shipping consent bypasses is a regulatory
 
 ## The shared singleton pattern
 
-Across all frameworks the right shape is **one bus per page lifetime**, created by ShopifyScripts and read lazily on the client. Resolve `shop` and `i18n` on the server, pass them to ShopifyScripts in the root layout/document head, then let route components publish through the shared global bus. Pass `i18n.currency` when Shopify runtime scripts and Shopify analytics need `window.Shopify.currency.active`. A module-level `getAnalytics()` helper works everywhere — React, Solid, Svelte, vanilla JS — and is what every framework example should use:
+Across all frameworks the right shape is **one bus per page lifetime**, created by ShopifyScripts and read lazily on the client. Resolve `shop` and `i18n` on the server, pass them to ShopifyScripts in the root layout/document head, then let route components publish through the shared global bus. Pass `i18n.currency` so `window.Shopify.currency.active` exists before the first event fires. Shopify analytics drops events until it does. A module-level `getAnalytics()` helper works everywhere — React, Solid, Svelte, vanilla JS — and is what every framework example should use:
 
 ```ts
 // app/lib/analytics.ts (or your framework's idiomatic shared-lib path)
@@ -589,7 +589,7 @@ Destinations that need Shopify visitor IDs can call `getTrackingValues()` from t
 After wiring, smoke-test each event in the browser dev tools:
 
 1. **Destination log fires** — open the page with the dev console open. You should see `[analytics] page_viewed` (or whichever events you logged) after consent allows tracking. If nothing logs, either `getAnalytics()` is no-op'ing on the server, the bus is unavailable, or `analyticsProcessingAllowed()` is false.
-2. **Monorail request fires** — Network tab, filter for `monorail-edge.shopifysvc.com`. A `produce_batch` POST should land within ~1s of consent being granted (or immediately if the visitor is in a no-consent-required region). If it never fires, either consent has not been granted, the schemas are missing required fields (check console for warnings about missing `id`/`title`/`vendor`/etc.), or `hasUserConsent` is false on the payload.
+2. **Monorail request fires** — Network tab, filter for `monorail-edge.shopifysvc.com`. A `produce_batch` POST should land within ~1s of consent being granted (or immediately if the visitor is in a no-consent-required region). If it never fires, either consent has not been granted, `window.Shopify.currency.active` is unset (the console shows `Missing window.Shopify.currency.active configuration`), the schemas are missing required fields (check console for warnings about missing `id`/`title`/`vendor`/etc.), or `hasUserConsent` is false on the payload.
 3. **Per-route navigation fires page_viewed** — click around. Each navigation should produce a fresh `page_viewed` event. If only the initial page load fires, the route-change hook is wired wrong (e.g. effect dependency missing in React, reactive read missing in Solid).
 4. **Cart events fire** — add an item to the cart. You should see `cart_updated` followed by `product_added_to_cart`.
 5. **Privacy banner renders for EU/UK visitors** — if `mode: "default-banner"`, simulate a GDPR-protected region with browser dev-tools location override or VPN. The banner should render. If it does not, check that `cdn.shopify.com` is not blocked by your CSP.
@@ -609,6 +609,7 @@ For production, re-verify against the production bundle. Several gotchas only ap
 - **Astro inline scripts cannot reference component scope.** Astro hoists `<script>` tags at build time. Bridge SSR data through hidden DOM (`data-*` attributes) and read it from the script. Trying to interpolate `{product.id}` directly into a script body silently fails — the script ships as a static string.
 - **Astro page-view fires only on full loads.** Astro is MPA-by-default. If you adopt View Transitions, listen for `astro:after-swap` instead of relying on the inline-script-runs-on-load behavior — otherwise SPA-nav transitions skip `page_viewed`.
 - **Required product fields silently drop the Monorail leg.** Missing `id`/`title`/`vendor`/`variantId`/`variantTitle`/`price` causes the Shopify analytics subscriber to skip Monorail dispatch and log a field-specific error. The bus event still fires for your subscribers — the loss is only in Shopify analytics. Watch the console.
+- **Missing `window.Shopify.currency.active` drops every Shopify analytics event.** The hosted analytics script checks `window.Shopify.locale` and `window.Shopify.currency.active` before it sends any event, `page_viewed` included, and logs `[shopify:error:analytics] Unable to send Shopify analytics: Missing window.Shopify.currency.active configuration.` when the currency is unset. Pass `i18n.currency` to ShopifyScripts. The cart tracker backfills the value from cart cost, but only once a cart exists, so browse-only sessions send nothing without the bootstrap value.
 - **Register destinations once per page lifetime.** Hydrogen owns the shared bus. Removing and re-adding a destination resets its replay position, so component remounts can deliver retained events again.
 - **Lighthouse skip is silent.** Monorail dispatch is skipped for Chrome Lighthouse user-agents. If your synthetic monitoring runs Lighthouse, you will see no Monorail requests in those runs — this is intentional.
 
