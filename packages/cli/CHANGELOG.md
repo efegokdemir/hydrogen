@@ -1,5 +1,11 @@
 # @shopify/cli-hydrogen
 
+## 13.0.6
+
+### Patch Changes
+
+- Fix `h2 env pull` corrupting environment variable values that contain backslashes, double quotes or tabs. Values are now single-quoted where possible so they are read back exactly by dotenv, and `$` and backticks are no longer expanded if the `.env` file is sourced by a shell. ([#4115](https://github.com/Shopify/hydrogen/pull/4115)) by [@stephanie-shopify](https://github.com/stephanie-shopify)
+
 ## 13.0.5
 
 ### Patch Changes
